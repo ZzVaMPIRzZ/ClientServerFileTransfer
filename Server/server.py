@@ -222,7 +222,7 @@ def update_log_file(file_name, key):
     """
     with open("log_file.csv", "a", newline="") as log_file:
         writer = csv.writer(log_file, delimiter="\t")
-        writer.writerow([file_name, str(datetime.now(tz=timezone.utc)).split('+')[0], key])
+        writer.writerow([file_name, str(datetime.now(tz=timezone.utc)).split('.')[0], key])
 
 
 def main(directory="data", server_IP="127.0.0.1", server_PORT=12345, BUFFER_SIZE=1024):
