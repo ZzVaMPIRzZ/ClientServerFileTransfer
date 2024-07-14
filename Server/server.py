@@ -2,7 +2,14 @@ import socket
 import os
 import argparse
 import csv
+import time
 from datetime import datetime, timezone
+
+from ConnectionFailedError import ConnectionFailedError
+from MessageTypeError import MessageTypeError
+from ResponseEnum import Response
+from ResultEnum import Result
+from TypeEnum import MessageType
 
 
 def create_log_file_if_not_exists(recreate=False):
@@ -18,28 +25,9 @@ def create_log_file_if_not_exists(recreate=False):
         try:
             with open("log_file.csv", "w", newline="") as log_file:
                 writer = csv.writer(log_file, delimiter="\t")
-                writer.writerow(["File Name", "Date and Time", "Key"])
+                writer.writerow(["File Name", "Date and Time", "Result"])
         except OSError as e:
             print(f"Error creating log file: {e}")
-            exit(1)
-
-
-def create_keys_file_if_not_exists(recreate=False):
-    """
-    A function that creates a keys file if it doesn't exist.
-
-    Parameters:
-    - recreate: bool, whether to recreate the file if it already exists (default is False)
-
-    No return value.
-    """
-    if recreate or not os.path.exists("keys.csv"):
-        try:
-            with open("keys.csv", "w", newline="") as keys_file:
-                writer = csv.writer(keys_file, delimiter="\t")
-                writer.writerow(["Key"])
-        except OSError as e:
-            print(f"Error creating keys file: {e}")
             exit(1)
 
 
@@ -73,8 +61,10 @@ def start_server(server_IP, server_PORT):
     - socket, the server socket
     """
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.settimeout(1)
     try:
         server_socket.bind((server_IP, server_PORT))
+        server_socket.listen(1)
     except OSError as e:
         print(f"Error binding socket: {e}")
         exit(1)
@@ -84,133 +74,107 @@ def start_server(server_IP, server_PORT):
     return server_socket
 
 
-def receive_file_name(client_socket):
+def receive_message(client_socket):
     """
-    A function that receives the file name from a client.
+    A function that receives a message from a client.
 
     Parameters:
     - client_socket: socket, the socket connection to the client
 
     Returns:
-    - str, the name of the file
-    - int, the total size of the file
-    - datetime, the time of the last change of the file
+    - str, the message
     """
-    len_of_title = int.from_bytes(client_socket.recv(8))
-    str_file_name, str_file_size, str_time_of_last_change = client_socket.recv(len_of_title).decode().split('\t')
-    file_name = os.path.basename(str_file_name)
-    file_size = int(str_file_size)
-    time_of_last_change = datetime.strptime(str_time_of_last_change, "%Y-%m-%d %H:%M:%S").replace(
-        tzinfo=timezone.utc)
+    try:
+        len_of_message = int.from_bytes(client_socket.recv(8))
+        message_type = client_socket.recv(6)
+        message = client_socket.recv(len_of_message)
+    except ConnectionError:
+        return None
+    except ValueError as e:
+        print(f"Error receiving message: {e}")
+        exit(1)
 
-    return file_name, file_size, time_of_last_change
-
-
-def receive_file(file_name, file_size, client_socket, offset=0, BUFFER_SIZE=1024):
-    """
-    A function that receives a file from a client.
-
-    Parameters:
-    - file_name: str, the name of the file to be received
-    - file_size: int, the total size of the file to be received
-    - client_socket: socket, the socket connection to the client
-    - offset: int, the offset to start receiving data from (default is 0)
-    - BUFFER_SIZE: int, the buffer size for receiving data (default is 1024)
-
-    Returns:
-    - int, the number of bytes left to receive
-    """
-    unreceived_size = file_size - offset
-    client_socket.sendall(offset.to_bytes(8))
-    file_mode = "ab" if offset > 0 else "wb"
-    with open(file_name, file_mode) as file:
-        while True:
-            data = client_socket.recv(BUFFER_SIZE)
-            if not data:
-                break
-            file.write(data)
-            unreceived_size -= len(data)
-    return unreceived_size
+    return message_type, message
 
 
-def generate_key(keys):
-    """
-    A function that generates a new key.
-
-    Parameters:
-    - keys: list, a list of existing keys
-
-    Returns:
-    - int, the new key
-    """
-    key = 0
-    while key == 0 or key in keys:
-        key = int.from_bytes(os.urandom(8))
-    return key
-
-
-def read_keys_file():
-    """
-    A function that reads the keys file and returns a list of keys.
-
-    Returns:
-    - list, a list of keys
-    """
-    keys = []
-    if os.path.exists("keys.csv"):
-        with open("keys.csv", "r") as key_file:
-            reader = csv.reader(key_file, delimiter="\t")
-            next(reader)
-            for row in reader:
-                keys.append(int(row[0]))
-    return keys
+# def receive_file_name(client_socket):
+#     """
+#     A function that receives the file name from a client.
+#
+#     Parameters:
+#     - client_socket: socket, the socket connection to the client
+#
+#     Returns:
+#     - str, the name of the file
+#     - int, the total size of the file
+#     - datetime, the time of the last change of the file
+#     """
+#     message_type, data = receive_message(client_socket)
+#     if message_type != MessageType.START.value:
+#         raise MessageTypeError(f"Invalid message type: {message_type}")
+#
+#     data = data.decode()
+#     str_file_name, str_file_size = data.split("\t")
+#     file_name = os.path.basename(str_file_name)
+#     file_size = int(str_file_size)
+#
+#     return file_name, file_size
 
 
-def read_log_file():
-    """
-    A function that reads the log file and returns a dictionary of logs.
+# def receive_file(file_name, server_socket, client_socket):
+#     """
+#     A function that receives a file from a client.
+#
+#     Parameters:
+#     - file_name: str, the name of the file to be received
+#     - file_size: int, the total size of the file to be received
+#     - client_socket: socket, the socket connection to the client
+#     - offset: int, the offset to start receiving data from (default is 0)
+#     - BUFFER_SIZE: int, the buffer size for receiving data (default is 1024)
+#
+#     Returns:
+#     - int, the number of bytes left to receive
+#     """
+#     result = Result.ERROR
+#     try:
+#         with open(file_name, "wb") as file:
+#             while True:
+#                 try:
+#                     message_type, data = receive_message(client_socket)
+#                     if message_type == MessageType.END.value:
+#                         result = Result.SUCCESS
+#                         break
+#                     if message_type == MessageType.CANCEL.value:
+#                         result = Result.CANCEL
+#                         break
+#                     if not message_type:
+#                         raise ConnectionError
+#                     if message_type != MessageType.DATA.value:
+#                         raise MessageTypeError(f"Invalid message type: {message_type}")
+#                     file.write(data)
+#                 except MessageTypeError as e:
+#                     raise e
+#                 except (socket.timeout, ConnectionError):
+#                     client_socket.close()
+#                     # time.sleep(1)
+#                     client_socket, _ = connect_client(server_socket, 3)
+#                     if client_socket is None:
+#                         raise ConnectionFailedError
+#
+#                 # client_socket.shutdown(socket.SHUT_RDWR)
+#                 # client_socket.close()
+#                 # time.sleep(1)
+#                 # client_socket, _ = connect_client(server_socket, 3)
+#     except (MessageTypeError, ConnectionFailedError) as e:
+#         raise e
+#     finally:
+#         if result != Result.SUCCESS:
+#             os.remove(file_name)
+#
+#     return result
 
-    Returns:
-    - dict, a dictionary of logs
-    """
-    logs = dict()
-    if os.path.exists("log_file.csv"):
-        with open("log_file.csv", "r") as log_file:
-            reader = csv.reader(log_file, delimiter="\t")
-            next(reader)
-            for row in reader:
-                logs[row[0]] = (
-                    datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc),
-                    int(row[2])
-                )
-    return logs
 
-
-def register_key(client_socket, keys):
-    """
-    A function that registers a new key for a client if it is not already registered.
-
-    Parameters:
-    - client_socket: socket, the socket connection to the client
-    - keys: list, a list of existing keys
-
-    Returns:
-    - int, the key of the client
-    """
-    key = int.from_bytes(client_socket.recv(8))
-    if key not in keys or key == 0:
-        key = generate_key(keys)
-        keys.append(key)
-        with open("keys.csv", "a", newline="") as key_file:
-            writer = csv.writer(key_file, delimiter="\t")
-            writer.writerow([key])
-
-    client_socket.sendall(key.to_bytes(8))
-
-    return key
-
-
-def update_log_file(file_name, key):
+def update_log_file(file_name, result):
     """
     A function that updates the log file with the name and time of the last change of a file.
 
@@ -222,10 +186,34 @@ def update_log_file(file_name, key):
     """
     with open("log_file.csv", "a", newline="") as log_file:
         writer = csv.writer(log_file, delimiter="\t")
-        writer.writerow([file_name, str(datetime.now(tz=timezone.utc)).split('.')[0], key])
+        writer.writerow([file_name, str(datetime.now(tz=timezone.utc)).split('.')[0], result])
 
 
-def main(directory="data", server_IP="127.0.0.1", server_PORT=12345, BUFFER_SIZE=1024):
+def connect_client(server_socket, times=0):
+    if times == 0:
+        while True:
+            try:
+                client_socket, client_address = server_socket.accept()
+                # client_socket.settimeout(3)
+                break
+            except (ConnectionResetError, ConnectionAbortedError, socket.timeout):
+                pass
+                # time.sleep(1)
+    else:
+        client_socket, client_address = None, None
+        for _ in range(times):
+            try:
+                client_socket, client_address = server_socket.accept()
+                # client_socket.settimeout(3)
+                break
+            except (ConnectionResetError, ConnectionAbortedError, socket.timeout):
+                pass
+                # time.sleep(1)
+    # print(f"Client connected: {client_address}")
+    return client_socket, client_address
+
+
+def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
     """
     A function that starts a server to listen for incoming files, receives files, and logs the file names and
     timestamps.
@@ -240,10 +228,6 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345, BUFFER_SIZE
     go_to_dir(directory)
 
     create_log_file_if_not_exists()
-    create_keys_file_if_not_exists()
-
-    keys = read_keys_file()
-    logs = read_log_file()
 
     server_socket = start_server(server_IP, server_PORT)
 
@@ -254,40 +238,64 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345, BUFFER_SIZE
     try:
         while True:
             # Accept a connection
-            client_socket, client_address = server_socket.accept()
+            client_socket, client_address = connect_client(server_socket)
             print(f"Connection from {client_address[0]}:{client_address[1]}")
 
-            # Check the key
-            key = register_key(client_socket, keys)
+            message_type = None
+            file = None
+            file_name = None
+            result = Result.SUCCESS
+            while message_type != MessageType.END.value:
+                message_type, data = receive_message(client_socket)
+                if message_type == MessageType.START.value:
+                    client_socket.send(Response.SUCCESS.value)
+                    if file:
+                        file.close()
+                        os.remove(file_name)
+                        print(f"Error receiving file {file_name}")
+                    file_name = data.decode().split('\t')[0]
+                    file_size = int(data.decode().split('\t')[1])
+                    file = open(file_name, "wb")
+                    print(f"Receiving file {file_name} ({file_size} bytes) ...")
+                elif message_type == MessageType.DATA.value:
+                    if not file:
+                        client_socket.send(Response.ERROR.value)
+                        result = Result.ERROR
+                        break
+                    client_socket.send(Response.SUCCESS.value)
+                    file.write(data)
+                elif message_type == MessageType.CANCEL.value:
+                    client_socket.send(Response.SUCCESS.value)
+                    result = Result.CANCEL
+                    break
+                elif not message_type:
+                    client_socket.close()
+                    # time.sleep(1)
+                    client_socket, _ = connect_client(server_socket, 3)
+                    if client_socket is None:
+                        result = Result.ERROR
+                        break
 
-            # Receive the file name and size
-            file_name, file_size, time_of_last_change = receive_file_name(client_socket)
-            print(f"Receiving {file_name} ({file_size} bytes)")
+            if file:
+                file.close()
 
-            # Check if the file has already been received
-            if file_name in logs and logs[file_name][0] > time_of_last_change and logs[file_name][1] == key:
-                offset = os.path.getsize(file_name)
-            else:
-                offset = 0
-
-            # Receive the file
-            unreceived_file_size = receive_file(file_name, file_size, client_socket, offset, BUFFER_SIZE)
-            if unreceived_file_size == 0:
+            if result == Result.SUCCESS:
+                client_socket.send(Response.SUCCESS.value)
                 print(f"File {file_name} received successfully")
+            elif result == Result.CANCEL:
+                print(f"File {file_name} canceled")
             else:
-                print(f"File {file_name} received with errors (Unreceived file size: {unreceived_file_size} bytes)")
+                print(f"Error receiving file {file_name}")
 
-            # Add the file name and date and time to the log file
-            logs[file_name] = (datetime.now(tz=timezone.utc), key)
-
-            update_log_file(file_name, key)
+            update_log_file(file_name, result)
 
             # Close the connection
-            client_socket.close()
+            if client_socket:
+                client_socket.close()
     except KeyboardInterrupt:
         print("Server stopped")
-    except Exception as e:
-        print(f"Error: {e}")
+    # except Exception as e:
+    #     print(f"Error: {e}")
     finally:
         server_socket.close()
 
@@ -298,8 +306,7 @@ if __name__ == "__main__":
     parser.add_argument("-directory", default="data", help="Directory to store received files")
     parser.add_argument("-server_IP", default="127.0.0.1", help="Server IP")
     parser.add_argument("-server_PORT", default=12345, help="Server port")
-    parser.add_argument("--buffer_size", type=int, default=1024, help="Buffer size")
     args = parser.parse_args()
 
     # Start the server
-    main(args.directory, args.server_IP, args.server_PORT, args.buffer_size)
+    main(args.directory, args.server_IP, args.server_PORT)

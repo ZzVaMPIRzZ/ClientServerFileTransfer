@@ -1,50 +1,80 @@
+import time
 from datetime import datetime, timezone
 import socket
 import tqdm
 import os
 import argparse
 
-
-def check_key(client_socket):
-    key = 0
-    if os.path.exists("key.txt"):
-        with open("key.txt", "r") as key_file:
-            key = int(key_file.read())
-
-    client_socket.sendall(key.to_bytes(8))
-    key = int.from_bytes(client_socket.recv(8))
-    with open("key.txt", "w") as key_file:
-        key_file.write(str(key))
+from ConnectionFailedError import ConnectionFailedError
+from MessageTypeError import MessageTypeError
+from TypeEnum import MessageType
 
 
-def send_file_params(client_socket, file_name, file_size, file_path):
+def connect_to_server(server_IP, server_PORT):
+    client_socket = None
+    for i in range(3):
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        client_socket.settimeout(3)
+        try:
+            time.sleep(0.1)
+            client_socket.connect((server_IP, server_PORT))
+            break
+        except ConnectionRefusedError:
+            if i == 2:
+                raise ConnectionFailedError
+
+    # print(f"Client socket created: {client_socket}")
+    return client_socket
+
+
+def send_message(client_socket, message_type, data):
+    try:
+        client_socket.send(len(data).to_bytes(8))
+        client_socket.send(message_type.value + data)
+        response = client_socket.recv(1)
+        if response != b'\x00':
+            raise ConnectionFailedError
+        # print(sent1, sent2)
+    except (ConnectionResetError, ConnectionAbortedError, ConnectionFailedError) as e:
+        raise e
+
+
+def send_file_params(client_socket, file_path):
+    file_name = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
+
     title = (file_name.encode() + '\t'.encode() +
-             str(file_size).encode() + '\t'.encode() +
-             str(datetime.fromtimestamp(os.path.getmtime(file_path), timezone.utc)).split('+')[0].encode())
-    client_socket.send(len(title).to_bytes(8))
-    client_socket.sendall(title)
+             str(file_size).encode())
+
+    send_message(client_socket, MessageType.START, title)
 
 
-def send_file(file_name, file_size, file_path, client_socket, offset, BUFFER_SIZE=1024):
-    progress_bar = tqdm.tqdm(range(file_size),
-                             f"Sending {file_name}",
-                             unit="B",
-                             unit_scale=True,
-                             unit_divisor=1024,
-                             colour="green"
-                             )
-    progress_bar.update(offset)
+def send_file(file_path, client_socket, server_IP, server_PORT, BUFFER_SIZE=1024):
+
+    file_size = os.path.getsize(file_path)
+
+    send_file_params(client_socket, file_path)
 
     with open(file_path, "rb") as file:
-        file.seek(offset)
         while True:
             data = file.read(BUFFER_SIZE)
-            if not data:
+            while True:
+                # time.sleep(0.005)
+                try:
+                    send_message(client_socket, MessageType.DATA, data)
+                    break
+                except (ConnectionResetError, ConnectionAbortedError):
+                    client_socket.close()
+                    time.sleep(0.1)
+                    client_socket = connect_to_server(server_IP, server_PORT)
+                except ConnectionFailedError as e:
+                    raise e
+            file_size -= len(data)
+            yield client_socket, len(data)
+            if file_size == 0:
+                send_message(client_socket, MessageType.END, b'')
                 break
-            client_socket.sendall(data)
-            progress_bar.update(len(data))
-
-    progress_bar.close()
 
 
 def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
@@ -59,37 +89,44 @@ def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
     No return value.
     """
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Start the client
+    client_socket = connect_to_server(server_IP, server_PORT)
+    print(f"Connected to {server_IP}:{server_PORT}")
 
+    file_name = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
+    print(f"Sending {file_name} ({file_size} bytes)")
+    progress_bar = tqdm.tqdm(range(file_size),
+                             f"Sending {file_name}",
+                             unit="B",
+                             unit_scale=True,
+                             unit_divisor=1024,
+                             colour="green"
+                             )
+
+    # Send the file
     try:
-        # Get the file name and size
-        file_name = os.path.basename(file_path)
-        file_size = os.path.getsize(file_path)
-
-        # Start the client
-        client_socket.connect((server_IP, server_PORT))
-        print(f"Connected to {server_IP}:{server_PORT}")
-
-        # Check the key
-        check_key(client_socket)
-
-        # Send the file name and size
-        print(f"Sending {file_name} ({file_size} bytes)")
-        send_file_params(client_socket, file_name, file_size, file_path)
-
-        # Receive the offset
-        offset = int.from_bytes(client_socket.recv(8))
-
-        # Send the file
-        send_file(file_name, file_size, file_path, client_socket, offset, BUFFER_SIZE)
-
-        # Close the connection
-        print(f"File {file_name} sent successfully")
-
-    except Exception as e:
-        print(f"Error: {e}")
+        for client_socket, data_len in send_file(file_path, client_socket, server_IP, server_PORT, BUFFER_SIZE):
+            progress_bar.update(data_len)
+        progress_bar.close()
+    except ConnectionFailedError:
+        progress_bar.close()
+        print("Failed to reconnect. Exiting...")
+        exit(1)
+    except KeyboardInterrupt:
+        progress_bar.close()
+        print("Process interrupted. Exiting...")
+        exit(1)
     finally:
         client_socket.close()
+
+    # Close the connection
+    print(f"File {os.path.basename(file_path)} sent successfully")
+
+    # except Exception as e:
+    #     print(f"Error: {e}")
+    # finally:
+    #     client_socket.close()
 
 
 if __name__ == "__main__":
