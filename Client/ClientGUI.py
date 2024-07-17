@@ -120,7 +120,7 @@ class ClientForm(QWidget):
                 sent_data += data_len
                 self.progress_dialog.setValue(int(100 * sent_data / os.path.getsize(self.file_textbox.text())))
                 if self.progress_dialog.wasCanceled():
-                    send_message(client_socket, MessageType.CANCEL, b'')
+                    send_message(client_socket, MessageType.CANCEL, b'\x00')
                     self.cancel_dialog = QMessageBox()
                     self.cancel_dialog.setIcon(QMessageBox.Warning)
                     self.cancel_dialog.setWindowTitle("Отмена")

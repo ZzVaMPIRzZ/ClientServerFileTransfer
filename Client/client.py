@@ -30,8 +30,9 @@ def connect_to_server(server_IP, server_PORT):
 
 def send_message(client_socket, message_type, data):
     try:
+        client_socket.send(message_type.value)
         client_socket.send(len(data).to_bytes(8))
-        client_socket.send(message_type.value + data)
+        client_socket.send(data)
         response = client_socket.recv(1)
         if response != b'\x00':
             raise ConnectionFailedError
@@ -73,7 +74,7 @@ def send_file(file_path, client_socket, server_IP, server_PORT, BUFFER_SIZE=1024
             file_size -= len(data)
             yield client_socket, len(data)
             if file_size == 0:
-                send_message(client_socket, MessageType.END, b'')
+                send_message(client_socket, MessageType.END, b'\x00')
                 break
 
 
