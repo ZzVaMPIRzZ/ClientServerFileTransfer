@@ -1,12 +1,11 @@
 import time
-from datetime import datetime, timezone
 import socket
 import tqdm
 import os
 import argparse
+from sys import exit
 
 from ConnectionFailedError import ConnectionFailedError
-from MessageTypeError import MessageTypeError
 from TypeEnum import MessageType
 
 
@@ -140,4 +139,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Start the client
-    main(args.file_name, args.server_IP, int(args.server_PORT), args.buffer_size)
+    try:
+        main(args.file_name, args.server_IP, int(args.server_PORT), args.buffer_size)
+    except KeyboardInterrupt:
+        print("Process interrupted. Exiting...")

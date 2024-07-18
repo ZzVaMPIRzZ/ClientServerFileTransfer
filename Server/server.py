@@ -134,7 +134,10 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
     print(f"Server listening on {server_IP}:{server_PORT}")
     print(f"Working directory: {os.getcwd()}")
 
-    inputs = [server_socket]
+    epoll = select.epoll()
+    epoll.register(server_socket, select.EPOLLIN)
+
+    fd_to_socket = {server_socket.fileno(): server_socket}
     lens_of_data = {}
     message_types = {}
     files = {}
@@ -144,75 +147,82 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
         while True:
             # Accept a connection
 
-            readable, _, _ = select.select(inputs, [], [])
+            events = epoll.poll()
 
-            for s in readable:
-                if s is server_socket:
-                    client_socket, client_address = connect_client(server_socket)
-                    client_socket.setblocking(False)
-                    inputs.append(client_socket)
-                    print(f"Connection from {client_address[0]}:{client_address[1]}")
-                else:
-                    client_socket = s
-                    client_address = client_socket.getpeername()
-                    try:
-                        if client_socket in lens_of_data:
-                            data = client_socket.recv(lens_of_data[client_socket])
+            for fd, event in events:
+                if event & select.EPOLLIN:
+                    s = fd_to_socket[fd]
+                    if s is server_socket:
+                        client_socket, client_address = connect_client(server_socket)
+                        client_socket.setblocking(False)
+                        fd_to_socket[client_socket.fileno()] = client_socket
+                        epoll.register(client_socket, select.EPOLLIN)
+                        print(f"Connection from {client_address[0]}:{client_address[1]}")
+                    elif s.fileno() != -1:
+                        client_socket = s
+                        client_address = client_socket.getpeername()
+                        try:
+                            if client_socket in lens_of_data:
+                                data = client_socket.recv(lens_of_data[client_socket])
 
-                            if lens_of_data[client_socket] - len(data) != 0:
-                                raise ConnectionError
-
-                            if message_types[client_socket] == MessageType.START.value:
-                                client_socket.send(Response.SUCCESS.value)
-                                file_name = data.decode().split('\t')[0]
-                                file_size = int(data.decode().split('\t')[1])
-                                files[client_socket] = open(file_name, "wb")
-                                print(f"Receiving file {file_name} ({file_size} bytes) ...")
-                            elif message_types[client_socket] == MessageType.DATA.value:
-                                if files[client_socket] is None:
-                                    client_socket.send(Response.ERROR.value)
+                                if lens_of_data[client_socket] - len(data) != 0:
                                     raise ConnectionError
-                                else:
+
+                                if message_types[client_socket] == MessageType.START.value:
                                     client_socket.send(Response.SUCCESS.value)
-                                    files[client_socket].write(data)
+                                    file_name = data.decode().split('\t')[0]
+                                    file_size = int(data.decode().split('\t')[1])
+                                    files[client_socket] = open(file_name, "wb")
+                                    print(f"Receiving file {file_name} ({file_size} bytes) ...")
+                                elif message_types[client_socket] == MessageType.DATA.value:
+                                    if files[client_socket] is None:
+                                        client_socket.send(Response.ERROR.value)
+                                        raise ConnectionError
+                                    else:
+                                        client_socket.send(Response.SUCCESS.value)
+                                        files[client_socket].write(data)
+                                else:
+                                    if (message_types[client_socket] == MessageType.END.value or
+                                            message_types[client_socket] == MessageType.CANCEL.value):
+                                        client_socket.send(Response.SUCCESS.value)
+                                    if client_socket in files:
+                                        update_log_file(files[client_socket].name, Result.ERROR.value)
+                                        files[client_socket].close()
+                                        if message_types[client_socket] != MessageType.END.value:
+                                            os.remove(files[client_socket].name)
+                                    del files[client_socket]
+                                    epoll.unregister(client_socket)
+                                    if client_socket in fd_to_socket:
+                                        del fd_to_socket[client_socket]
+                                    client_socket.close()
+                                    if message_types[client_socket] == MessageType.END.value:
+                                        print(f"Connection from {client_address[0]}:{client_address[1]} closed successfully")
+                                    elif message_types[client_socket] == MessageType.CANCEL.value:
+                                        print(f"Connection from {client_address[0]}:{client_address[1]} canceled")
+                                    else:
+                                        print(f"Connection from {client_address[0]}:{client_address[1]} closed with error")
+
+                                del lens_of_data[client_socket]
+                                del message_types[client_socket]
+
+                            elif client_socket in message_types:
+                                message = client_socket.recv(8)
+                                if message is None:
+                                    raise ConnectionError
+                                lens_of_data[client_socket] = int.from_bytes(message)
+                                continue
                             else:
-                                if (message_types[client_socket] == MessageType.END.value or
-                                        message_types[client_socket] == MessageType.CANCEL.value):
-                                    client_socket.send(Response.SUCCESS.value)
-                                if files[client_socket] is not None:
-                                    update_log_file(files[client_socket].name, Result.ERROR.value)
-                                    files[client_socket].close()
-                                    if message_types[client_socket] != MessageType.END.value:
-                                        os.remove(files[client_socket].name)
-                                del files[client_socket]
-                                inputs.remove(client_socket)
-                                client_socket.close()
-                                if message_types[client_socket] == MessageType.END.value:
-                                    print(f"Connection from {client_address[0]}:{client_address[1]} closed successfully")
-                                elif message_types[client_socket] == MessageType.CANCEL.value:
-                                    print(f"Connection from {client_address[0]}:{client_address[1]} canceled")
-                                else:
-                                    print(f"Connection from {client_address[0]}:{client_address[1]} closed with error")
-
-                            del lens_of_data[client_socket]
-                            del message_types[client_socket]
-
-                        elif client_socket in message_types:
-                            message = client_socket.recv(8)
-                            if message is None:
-                                raise ConnectionError
-                            lens_of_data[client_socket] = int.from_bytes(message)
-                            continue
-                        else:
-                            message = client_socket.recv(6)
-                            if message is None:
-                                raise ConnectionError
-                            message_types[client_socket] = message
-                            continue
-                    except ConnectionError:
-                        inputs.remove(client_socket)
-                        client_socket.close()
-                        print(f"Connection from {client_address[0]}:{client_address[1]} closed with error")
+                                message = client_socket.recv(6)
+                                if message is None:
+                                    raise ConnectionError
+                                message_types[client_socket] = message
+                                continue
+                        except ConnectionError:
+                            epoll.unregister(client_socket)
+                            if client_socket in fd_to_socket:
+                                del fd_to_socket[client_socket]
+                            client_socket.close()
+                            print(f"Connection from {client_address[0]}:{client_address[1]} closed with error")
 
     except KeyboardInterrupt:
         print("Server stopped")
