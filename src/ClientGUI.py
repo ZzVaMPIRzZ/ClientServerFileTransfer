@@ -6,8 +6,9 @@ from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QLineEdi
 from PyQt5.QtCore import Qt
 
 from ConnectionFailedError import ConnectionFailedError
+from FileIsBeingAlreadyTransferredError import FileIsBeingAlreadyTransferredError
 from TypeEnum import MessageType
-from client import connect_to_server, send_file, send_message
+from Client import connect_to_server, send_file, send_message
 
 
 class ClientForm(QWidget):
@@ -27,7 +28,7 @@ class ClientForm(QWidget):
         self.server_IP_label = None
         self.client_IP_label = None
         self.client_port_label = None
-        self.error_dialog = None
+        self.message_dialog = None
 
         self.init_ui()
 
@@ -91,59 +92,64 @@ class ClientForm(QWidget):
         self.setMaximumSize(500, 160)
         self.setMinimumSize(500, 160)
 
-    def __send(self):
-        try:
-            client_socket = connect_to_server(self.server_IP_textbox.text(), self.server_port_spinbox.value())
-        except ConnectionFailedError as e:
-            self.error_dialog = QMessageBox()
-            self.error_dialog.setIcon(QMessageBox.Critical)
-            self.error_dialog.setWindowTitle("Ошибка")
-            self.error_dialog.setText("Сервер недоступен")
-            self.error_dialog.setStandardButtons(QMessageBox.Ok)
-            self.error_dialog.exec_()
-            return
+    def __show_message(self, icon, title, message):
+        self.message_dialog = QMessageBox()
+        self.message_dialog.setIcon(icon)
+        self.message_dialog.setWindowTitle(title)
+        self.message_dialog.setText(message)
+        self.message_dialog.setStandardButtons(QMessageBox.Ok)
+        self.message_dialog.exec_()
+
+    def __show_progress(self, file_path):
         self.progress_dialog = QProgressDialog(
-            f"Отправляем {self.file_textbox.text()}",
+            f"Отправляем {os.path.basename(file_path)}",
             "Отмена", 0, 100, self)
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setWindowTitle('Прогресс')
         self.progress_dialog.setMinimumDuration(0)
         self.progress_dialog.setValue(0)
 
+    def __update_progress(self, file_path, sent_data_len):
+        self.progress_dialog.setValue(int(100 * sent_data_len / os.path.getsize(file_path)))
+
+    def __send(self):
+        file_path = self.file_textbox.text()
+        server_IP = self.server_IP_textbox.text()
+        server_port = self.server_port_spinbox.value()
+        buffer_size = self.buffer_spinbox.value()
+        if os.path.exists(file_path) is False:
+            self.__show_message(QMessageBox.Critical, "Ошибка", f"Файл {file_path} не найден")
+            return
         try:
-            sent_data = 0
-            for client_socket, data_len in send_file(self.file_textbox.text(),
+            client_socket = connect_to_server(server_IP, server_port)
+        except ConnectionFailedError:
+            self.__show_message(QMessageBox.Critical, "Ошибка", "Сервер недоступен")
+            return
+
+        sent_data_len = 0
+        try:
+            self.__show_progress(file_path)
+            for client_socket, data_len in send_file(file_path,
                                                      client_socket,
-                                                     self.server_IP_textbox.text(),
-                                                     self.server_port_spinbox.value(),
-                                                     self.buffer_spinbox.value()):
-                sent_data += data_len
-                self.progress_dialog.setValue(int(100 * sent_data / os.path.getsize(self.file_textbox.text())))
+                                                     server_IP,
+                                                     server_port,
+                                                     buffer_size):
+                sent_data_len += data_len
+                self.__update_progress(file_path, sent_data_len)
                 if self.progress_dialog.wasCanceled():
                     send_message(client_socket, MessageType.CANCEL, b'\x00')
-                    self.cancel_dialog = QMessageBox()
-                    self.cancel_dialog.setIcon(QMessageBox.Warning)
-                    self.cancel_dialog.setWindowTitle("Отмена")
-                    self.cancel_dialog.setText("Отменено пользователем")
-                    self.cancel_dialog.setStandardButtons(QMessageBox.Ok)
-                    self.cancel_dialog.exec_()
+                    self.__show_message(QMessageBox.Critical, "Отмена", "Отменено пользователем")
                     return
             self.progress_dialog.setValue(100)
             self.progress_dialog.close()
-            self.message_dialog = QMessageBox()
-            self.message_dialog.setIcon(QMessageBox.Information)
-            self.message_dialog.setWindowTitle("Успех")
-            self.message_dialog.setText("Файл успешно отправлен!")
-            self.message_dialog.setStandardButtons(QMessageBox.Ok)
-            self.message_dialog.exec_()
+            self.__show_message(QMessageBox.Information, "Успех", "Файл успешно отправлен")
+        except FileIsBeingAlreadyTransferredError:
+            self.progress_dialog.close()
+            self.__show_message(QMessageBox.Critical, "Ошибка", "Файл уже отправляется от другого клиента")
+            return
         except ConnectionFailedError:
             self.progress_dialog.close()
-            self.error_dialog = QMessageBox()
-            self.error_dialog.setIcon(QMessageBox.Critical)
-            self.error_dialog.setWindowTitle("Ошибка")
-            self.error_dialog.setText("Сервер недоступен")
-            self.error_dialog.setStandardButtons(QMessageBox.Ok)
-            self.error_dialog.exec_()
+            self.__show_message(QMessageBox.Critical, "Ошибка", "Сервер недоступен")
             return
         finally:
             client_socket.close()

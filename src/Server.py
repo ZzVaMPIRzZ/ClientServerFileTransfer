@@ -1,14 +1,28 @@
+import signal
 import socket
 import os
 import argparse
 import csv
 from datetime import datetime, timezone
+from sys import exit
 
 import select
 
 from ResponseEnum import Response
 from ResultEnum import Result
 from TypeEnum import MessageType
+
+
+def exit_gracefully(signal_number=None, frame=None):
+    """
+    A function that closes the server socket and exits the program gracefully.
+
+    No parameters.
+
+    No return value.
+    """
+    print("\nClosing server socket...")
+    exit(0)
 
 
 def create_log_file_if_not_exists(recreate=False):
@@ -20,9 +34,9 @@ def create_log_file_if_not_exists(recreate=False):
 
     No return value.
     """
-    if recreate or not os.path.exists("log_file.csv"):
+    if recreate or not os.path.exists("../Server/log_file.csv"):
         try:
-            with open("log_file.csv", "w", newline="") as log_file:
+            with open("../Server/log_file.csv", "w", newline="") as log_file:
                 writer = csv.writer(log_file, delimiter="\t")
                 writer.writerow(["File Name", "Date and Time", "Result"])
         except OSError as e:
@@ -84,7 +98,7 @@ def update_log_file(file_name, result):
 
     No return value.
     """
-    with open("log_file.csv", "a", newline="") as log_file:
+    with open("../Server/log_file.csv", "a", newline="") as log_file:
         writer = csv.writer(log_file, delimiter="\t")
         writer.writerow([file_name, str(datetime.now(tz=timezone.utc)).split('.')[0], result])
 
@@ -141,6 +155,11 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
     lens_of_data = {}
     message_types = {}
     files = {}
+    addresses = {}
+    file_names = []
+
+    signal.signal(signal.SIGINT, exit_gracefully)
+    # signal.signal(signal.SIGTERM, exit_gracefully)
 
     # Start receiving files
     try:
@@ -154,33 +173,48 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
                     s = fd_to_socket[fd]
                     if s is server_socket:
                         client_socket, client_address = connect_client(server_socket)
+                        addresses[client_socket] = client_address
                         client_socket.setblocking(False)
                         fd_to_socket[client_socket.fileno()] = client_socket
                         epoll.register(client_socket, select.EPOLLIN)
                         print(f"Connection from {client_address[0]}:{client_address[1]}")
-                    elif s.fileno() != -1:
+                    else:
                         client_socket = s
-                        client_address = client_socket.getpeername()
+                        client_address = addresses[client_socket]
                         try:
                             if client_socket in lens_of_data:
+                                # Принимаем данные (3-ий шаг)
                                 data = client_socket.recv(lens_of_data[client_socket])
 
                                 if lens_of_data[client_socket] - len(data) != 0:
                                     raise ConnectionError
 
+                                # Обрабатываем данные (в 3-ем шаге)
                                 if message_types[client_socket] == MessageType.START.value:
-                                    client_socket.send(Response.SUCCESS.value)
+                                    # Если получили имя файла
                                     file_name = data.decode().split('\t')[0]
                                     file_size = int(data.decode().split('\t')[1])
-                                    files[client_socket] = open(file_name, "wb")
-                                    print(f"Receiving file {file_name} ({file_size} bytes) ...")
-                                elif message_types[client_socket] == MessageType.DATA.value:
-                                    if files[client_socket] is None:
-                                        client_socket.send(Response.ERROR.value)
-                                        raise ConnectionError
+                                    print(file_names, file_name, file_name in file_names)
+                                    if file_name in file_names:
+                                        client_socket.send(Response.FILE_IS_BEING_ALREADY_TRANSFERRED.value)
+                                        epoll.unregister(client_socket)
+                                        if client_socket in fd_to_socket:
+                                            del fd_to_socket[client_socket]
+                                        del addresses[client_socket]
+                                        client_socket.close()
+                                        print(f"File {file_name} is being transferred right now. Skipping...")
                                     else:
                                         client_socket.send(Response.SUCCESS.value)
+                                        files[client_socket] = open(file_name, "wb")
+                                        file_names.append(file_name)
+                                        print(f"Receiving file {file_name} ({file_size} bytes) ...")
+                                elif message_types[client_socket] == MessageType.DATA.value:
+                                    if client_socket in files:
+                                        client_socket.send(Response.SUCCESS.value)
                                         files[client_socket].write(data)
+                                    else:
+                                        client_socket.send(Response.ERROR.value)
+                                        raise ConnectionError
                                 else:
                                     if (message_types[client_socket] == MessageType.END.value or
                                             message_types[client_socket] == MessageType.CANCEL.value):
@@ -190,10 +224,12 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
                                         files[client_socket].close()
                                         if message_types[client_socket] != MessageType.END.value:
                                             os.remove(files[client_socket].name)
+                                    file_names.remove(files[client_socket].name)
                                     del files[client_socket]
                                     epoll.unregister(client_socket)
                                     if client_socket in fd_to_socket:
                                         del fd_to_socket[client_socket]
+                                    del addresses[client_socket]
                                     client_socket.close()
                                     if message_types[client_socket] == MessageType.END.value:
                                         print(f"Connection from {client_address[0]}:{client_address[1]} closed successfully")
@@ -206,12 +242,14 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
                                 del message_types[client_socket]
 
                             elif client_socket in message_types:
+                                # Принимаем длину сообщения (2-ой шаг)
                                 message = client_socket.recv(8)
                                 if message is None:
                                     raise ConnectionError
                                 lens_of_data[client_socket] = int.from_bytes(message)
                                 continue
                             else:
+                                # Принимаем тип сообщения (1-ый шаг)
                                 message = client_socket.recv(6)
                                 if message is None:
                                     raise ConnectionError
@@ -221,11 +259,16 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
                             epoll.unregister(client_socket)
                             if client_socket in fd_to_socket:
                                 del fd_to_socket[client_socket]
+                            if client_socket in addresses:
+                                del addresses[client_socket]
+                            if client_socket in files:
+                                del files[client_socket]
+                            if client_socket in lens_of_data:
+                                del lens_of_data[client_socket]
+                            if client_socket in message_types:
+                                del message_types[client_socket]
                             client_socket.close()
                             print(f"Connection from {client_address[0]}:{client_address[1]} closed with error")
-
-    except KeyboardInterrupt:
-        print("Server stopped")
     finally:
         server_socket.close()
 

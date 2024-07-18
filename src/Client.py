@@ -6,7 +6,9 @@ import argparse
 from sys import exit
 
 from ConnectionFailedError import ConnectionFailedError
+from FileIsBeingAlreadyTransferredError import FileIsBeingAlreadyTransferredError
 from TypeEnum import MessageType
+from ResponseEnum import Response
 
 
 def connect_to_server(server_IP, server_PORT):
@@ -33,10 +35,12 @@ def send_message(client_socket, message_type, data):
         client_socket.send(len(data).to_bytes(8))
         client_socket.send(data)
         response = client_socket.recv(1)
+        if response == Response.FILE_IS_BEING_ALREADY_TRANSFERRED.value:
+            raise FileIsBeingAlreadyTransferredError
         if response != b'\x00':
             raise ConnectionFailedError
         # print(sent1, sent2)
-    except (ConnectionResetError, ConnectionAbortedError, ConnectionFailedError) as e:
+    except (ConnectionResetError, ConnectionAbortedError, ConnectionFailedError, FileIsBeingAlreadyTransferredError) as e:
         raise e
 
 
@@ -90,11 +94,14 @@ def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
     """
 
     # Start the client
+    if os.path.exists(file_path) is False:
+        print(f"File {file_path} not found. Exiting...")
+        exit(1)
+    file_name = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
     client_socket = connect_to_server(server_IP, server_PORT)
     print(f"Connected to {server_IP}:{server_PORT}")
 
-    file_name = os.path.basename(file_path)
-    file_size = os.path.getsize(file_path)
     print(f"Sending {file_name} ({file_size} bytes)")
     progress_bar = tqdm.tqdm(range(file_size),
                              f"Sending {file_name}",
@@ -109,6 +116,10 @@ def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
         for client_socket, data_len in send_file(file_path, client_socket, server_IP, server_PORT, BUFFER_SIZE):
             progress_bar.update(data_len)
         progress_bar.close()
+    except FileIsBeingAlreadyTransferredError:
+        progress_bar.close()
+        print("File is already transferring. Exiting...")
+        exit(1)
     except ConnectionFailedError:
         progress_bar.close()
         print("Failed to reconnect. Exiting...")
