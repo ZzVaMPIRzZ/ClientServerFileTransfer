@@ -12,27 +12,17 @@ from ResponseEnum import Response
 from ResultEnum import Result
 from TypeEnum import MessageType
 
-
-def exit_gracefully(signal_number=None, frame=None):
-    """
-    A function that closes the server socket and exits the program gracefully.
-
-    No parameters.
-
-    No return value.
-    """
-    print("\nClosing server socket...")
-    exit(0)
+CLOSE_SERVER = False
 
 
 def create_log_file_if_not_exists(recreate=False):
     """
-    A function that creates a log file if it doesn't exist.
+    Создает лог-файл, если он не существует.
+    Args:
+        recreate: bool, пересоздать лог-файл
 
-    Parameters:
-    - recreate: bool, whether to recreate the file if it already exists (default is False)
-
-    No return value.
+    raise:
+        OSError
     """
     if recreate or not os.path.exists("../Server/log_file.csv"):
         try:
@@ -40,38 +30,36 @@ def create_log_file_if_not_exists(recreate=False):
                 writer = csv.writer(log_file, delimiter="\t")
                 writer.writerow(["File Name", "Date and Time", "Result"])
         except OSError as e:
-            print(f"Error creating log file: {e}")
-            exit(1)
+            raise e
 
 
 def go_to_dir(directory):
     """
-    A function that changes the working directory.
+    Переход в заданный каталог.
+    Args:
+        directory: str, каталог
 
-    Parameters:
-    - directory: str, the directory path
-
-    No return value.
+    raise:
+        OSError
     """
     if not os.path.exists(directory):
         try:
             os.makedirs(directory)
         except OSError as e:
-            print(f"Error creating directory: {e}")
-            exit(1)
+            raise e
 
     os.chdir(directory)
 
 
 def start_server(server_IP, server_PORT):
     """
-    A function that starts a server.
-
-    Parameters:
-    - server_address: tuple, the IP address and port number to bind the server socket
+    Запуск сервера.
+    Args:
+        server_IP: str, IP-адрес сервера
+        server_PORT: int, порт сервера
 
     Returns:
-    - socket, the server socket
+        server_socket: socket, сокет сервера
     """
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.settimeout(1)
@@ -80,70 +68,57 @@ def start_server(server_IP, server_PORT):
         server_socket.bind((server_IP, server_PORT))
         server_socket.listen(5)
     except OSError as e:
-        print(f"Error binding socket: {e}")
-        exit(1)
-
-    server_socket.listen(1)
+        raise e
 
     return server_socket
 
 
 def update_log_file(file_name, result):
     """
-    A function that updates the log file with the name and time of the last change of a file.
-
-    Parameters:
-    - file_name: str, the name of the file
-    - key: int, the key of the client
-
-    No return value.
+    Обновляет лог-файл.
+    Args:
+        file_name: str, имя файла
+        result: str, результат
     """
     with open("../Server/log_file.csv", "a", newline="") as log_file:
         writer = csv.writer(log_file, delimiter="\t")
         writer.writerow([file_name, str(datetime.now(tz=timezone.utc)).split('.')[0], result])
 
 
-def connect_client(server_socket, times=0):
-    if times == 0:
-        while True:
-            try:
-                client_socket, client_address = server_socket.accept()
-                # client_socket.settimeout(3)
-                break
-            except (ConnectionResetError, ConnectionAbortedError, socket.timeout):
-                pass
-                # time.sleep(1)
-    else:
-        client_socket, client_address = None, None
-        for _ in range(times):
-            try:
-                client_socket, client_address = server_socket.accept()
-                # client_socket.settimeout(3)
-                break
-            except (ConnectionResetError, ConnectionAbortedError, socket.timeout):
-                pass
-                # time.sleep(1)
-    # print(f"Client connected: {client_address}")
+def connect_client(server_socket):
+    """
+    Подключение клиента.
+    Args:
+        server_socket: socket, сокет сервера
+
+    Returns:
+        client_socket: socket, сокет клиента
+        client_address: tuple, IP-адрес и порт клиента
+    """
+    while True:
+        try:
+            client_socket, client_address = server_socket.accept()
+            break
+        except (ConnectionResetError, ConnectionAbortedError, socket.timeout):
+            pass
     return client_socket, client_address
 
 
 def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
     """
-    A function that starts a server to listen for incoming files, receives files, and logs the file names and
-    timestamps.
-
-    Parameters:
-    - directory: str, the directory path where files will be stored (default is "data")
-    - server_address: tuple, the IP address and port number to bind the server socket (default is ("127.0.0.1", 12345))
-    - BUFFER_SIZE: int, the size of the buffer for receiving data (default is 1024)
-
-    No return value.
+    Основная функция
+    Args:
+        directory: str, каталог
+        server_IP: str, IP-адрес сервера
+        server_PORT: int, порт сервера
     """
-    go_to_dir(directory)
-
-    create_log_file_if_not_exists()
-
-    server_socket = start_server(server_IP, server_PORT)
+    try:
+        go_to_dir(directory)
+        create_log_file_if_not_exists()
+        server_socket = start_server(server_IP, server_PORT)
+    except OSError as e:
+        print(f"Error: {e}")
+        exit(1)
 
     print(f"Server listening on {server_IP}:{server_PORT}")
     print(f"Working directory: {os.getcwd()}")
@@ -151,21 +126,37 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
     epoll = select.epoll()
     epoll.register(server_socket, select.EPOLLIN)
 
-    fd_to_socket = {server_socket.fileno(): server_socket}
-    lens_of_data = {}
-    message_types = {}
-    files = {}
-    addresses = {}
-    file_names = []
+    fd_to_socket = {server_socket.fileno(): server_socket}  # Словарь файловый дескриптор -> сокет клиента
+    lens_of_data = {}  # Словарь сокет клиента -> длина данных
+    message_types = {}  # Словарь сокет клиента -> тип сообщения
+    files = {}  # Словарь сокет клиента -> файл
+    addresses = {}  # Словарь сокет клиента -> IP-адрес и порт
+    file_names = []  # Список имен файлов, которые передаются в данный момент
 
+    def exit_gracefully(signal_number, frame):
+        """
+        Завершает программу.
+        Args:
+            signal_number: int, номер сигнала
+            frame: frame, фрейм
+        """
+        global CLOSE_SERVER
+        if not CLOSE_SERVER:
+            CLOSE_SERVER = True
+            print("\nClosing server socket...")
+            epoll.unregister(server_socket)
+            epoll.close()
+            for i in files:
+                files[i].close()
+            server_socket.close()
+            exit(0)
+
+    # Регистрируем обработчик сигналов для принудительного завершения
     signal.signal(signal.SIGINT, exit_gracefully)
-    # signal.signal(signal.SIGTERM, exit_gracefully)
+    signal.signal(signal.SIGTERM, exit_gracefully)
 
-    # Start receiving files
     try:
         while True:
-            # Accept a connection
-
             events = epoll.poll()
 
             for fd, event in events:
@@ -191,10 +182,12 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
 
                                 # Обрабатываем данные (в 3-ем шаге)
                                 if message_types[client_socket] == MessageType.START.value:
-                                    # Если получили имя файла
+                                    # Если получили имя файла (самый первый отправленный пакет с данными)
                                     file_name = data.decode().split('\t')[0]
                                     file_size = int(data.decode().split('\t')[1])
-                                    print(file_names, file_name, file_name in file_names)
+
+                                    # Если файл с таким именем в данный момент принимается от другого клиента,
+                                    # то отклоняем принятие ещё одного файла с таким названием
                                     if file_name in file_names:
                                         client_socket.send(Response.FILE_IS_BEING_ALREADY_TRANSFERRED.value)
                                         epoll.unregister(client_socket)
@@ -208,7 +201,9 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
                                         files[client_socket] = open(file_name, "wb")
                                         file_names.append(file_name)
                                         print(f"Receiving file {file_name} ({file_size} bytes) ...")
+
                                 elif message_types[client_socket] == MessageType.DATA.value:
+                                    # Если получили данные
                                     if client_socket in files:
                                         client_socket.send(Response.SUCCESS.value)
                                         files[client_socket].write(data)
@@ -216,11 +211,27 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
                                         client_socket.send(Response.ERROR.value)
                                         raise ConnectionError
                                 else:
+                                    # Во всех остальных случаях
                                     if (message_types[client_socket] == MessageType.END.value or
                                             message_types[client_socket] == MessageType.CANCEL.value):
                                         client_socket.send(Response.SUCCESS.value)
+
+                                    file_name = files[client_socket].name
+                                    if message_types[client_socket] == MessageType.END.value:
+                                        update_log_file(file_name, Result.SUCCESS.name)
+                                        print(
+                                            f"Connection from {client_address[0]}:{client_address[1]} closed "
+                                            f"successfully")
+                                    elif message_types[client_socket] == MessageType.CANCEL.value:
+                                        update_log_file(file_name, Result.CANCEL.name)
+                                        print(f"Connection from {client_address[0]}:{client_address[1]} canceled")
+                                    else:
+                                        update_log_file(file_name, Result.ERROR.name)
+                                        print(
+                                            f"Connection from {client_address[0]}:{client_address[1]} closed with"
+                                            f" error")
+
                                     if client_socket in files:
-                                        update_log_file(files[client_socket].name, Result.ERROR.value)
                                         files[client_socket].close()
                                         if message_types[client_socket] != MessageType.END.value:
                                             os.remove(files[client_socket].name)
@@ -231,12 +242,6 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
                                         del fd_to_socket[client_socket]
                                     del addresses[client_socket]
                                     client_socket.close()
-                                    if message_types[client_socket] == MessageType.END.value:
-                                        print(f"Connection from {client_address[0]}:{client_address[1]} closed successfully")
-                                    elif message_types[client_socket] == MessageType.CANCEL.value:
-                                        print(f"Connection from {client_address[0]}:{client_address[1]} canceled")
-                                    else:
-                                        print(f"Connection from {client_address[0]}:{client_address[1]} closed with error")
 
                                 del lens_of_data[client_socket]
                                 del message_types[client_socket]
@@ -274,12 +279,12 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
 
 
 if __name__ == "__main__":
-    # Parse command-line arguments
+    # Парсинг аргументов командной строки
     parser = argparse.ArgumentParser()
-    parser.add_argument("-directory", default="data", help="Directory to store received files")
+    parser.add_argument("-directory", default="data", help="Directory to store received files (default: ./data)")
     parser.add_argument("-server_IP", default="127.0.0.1", help="Server IP")
     parser.add_argument("-server_PORT", default=12345, help="Server port")
     args = parser.parse_args()
 
-    # Start the server
+    # Запуск сервера
     main(args.directory, args.server_IP, args.server_PORT)

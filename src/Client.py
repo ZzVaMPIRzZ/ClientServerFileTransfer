@@ -11,7 +11,46 @@ from TypeEnum import MessageType
 from ResponseEnum import Response
 
 
+def validate_ip_port(IP, PORT):
+    """
+    Проверяет IP-адрес на валидность.
+    Args:
+        IP: str, IP-адрес
+        PORT: int, порт
+
+    raise:
+        ValueError
+    """
+    parts = IP.split(".")
+    try:
+        if len(parts) != 4:
+            raise ValueError
+        for part in parts:
+            try:
+                if int(part) > 255 or int(part) < 0:
+                    raise ValueError
+            except ValueError:
+                raise ValueError
+        if int(PORT) > 65535 or int(PORT) < 1:
+            raise ValueError
+    except socket.error:
+        raise ValueError
+
+
 def connect_to_server(server_IP, server_PORT):
+    """
+    Подключается к серверу.
+    Args:
+        server_IP: str, IP-адрес сервера
+        server_PORT: int, порт сервера
+
+    raise:
+        ConnectionFailedError
+    """
+    try:
+        validate_ip_port(server_IP, server_PORT)
+    except ValueError:
+        raise ConnectionFailedError
     client_socket = None
     for i in range(3):
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -30,6 +69,19 @@ def connect_to_server(server_IP, server_PORT):
 
 
 def send_message(client_socket, message_type, data):
+    """
+    Отправляет сообщение на сервер.
+    Args:
+        client_socket: socket, сокет клиента
+        message_type: MessageType, тип сообщения
+        data: bytes, данные
+
+    raise:
+        ConnectionResetError
+        ConnectionAbortedError
+        ConnectionFailedError
+        FileIsBeingAlreadyTransferredError
+    """
     try:
         client_socket.send(message_type.value)
         client_socket.send(len(data).to_bytes(8))
@@ -37,14 +89,21 @@ def send_message(client_socket, message_type, data):
         response = client_socket.recv(1)
         if response == Response.FILE_IS_BEING_ALREADY_TRANSFERRED.value:
             raise FileIsBeingAlreadyTransferredError
-        if response != b'\x00':
+        if response != Response.SUCCESS.value:
             raise ConnectionFailedError
         # print(sent1, sent2)
-    except (ConnectionResetError, ConnectionAbortedError, ConnectionFailedError, FileIsBeingAlreadyTransferredError) as e:
+    except (ConnectionResetError, ConnectionAbortedError,
+            ConnectionFailedError, FileIsBeingAlreadyTransferredError) as e:
         raise e
 
 
 def send_file_params(client_socket, file_path):
+    """
+    Отправляет параметры файла на сервер.
+    Args:
+        client_socket: socket, сокет клиента
+        file_path: str, путь к файлу
+    """
     file_name = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
 
@@ -54,7 +113,21 @@ def send_file_params(client_socket, file_path):
     send_message(client_socket, MessageType.START, title)
 
 
-def send_file(file_path, client_socket, server_IP, server_PORT, BUFFER_SIZE=1024):
+def send_file(file_path, client_socket, BUFFER_SIZE=1024):
+    """
+    Генератор, отправляющий файл на сервер.
+    Args:
+        file_path: str, путь к файлу
+        client_socket: socket, сокет клиента
+        BUFFER_SIZE: int, размер буфера
+
+    Returns:
+
+    Yield:
+        client_socket: socket, сокет клиента (возможно, что в процессе он может измениться из-за переподключения),
+        len(data): int, количество отправленных байт
+
+    """
 
     file_size = os.path.getsize(file_path)
 
@@ -68,14 +141,10 @@ def send_file(file_path, client_socket, server_IP, server_PORT, BUFFER_SIZE=1024
                 try:
                     send_message(client_socket, MessageType.DATA, data)
                     break
-                except (ConnectionResetError, ConnectionAbortedError):
-                    client_socket.close()
-                    time.sleep(0.1)
-                    client_socket = connect_to_server(server_IP, server_PORT)
-                except ConnectionFailedError as e:
+                except Exception as e:
                     raise e
             file_size -= len(data)
-            yield client_socket, len(data)
+            yield len(data)
             if file_size == 0:
                 send_message(client_socket, MessageType.END, b'\x00')
                 break
@@ -83,17 +152,13 @@ def send_file(file_path, client_socket, server_IP, server_PORT, BUFFER_SIZE=1024
 
 def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
     """
-    A function that starts a client to send a file to a server.
-
-    Parameters:
-    - file_path: str, the path to the file to be sent.
-    - server_address: tuple, the address of the server to connect to.
-    - BUFFER_SIZE: int, the buffer size for reading and sending file data (default is 1024).
-
-    No return value.
+    Основная функция
+    Args:
+        file_path: str, путь к файлу
+        server_IP: str, IP-адрес сервера
+        server_PORT: int, порт сервера
+        BUFFER_SIZE: int, размер буфера
     """
-
-    # Start the client
     if os.path.exists(file_path) is False:
         print(f"File {file_path} not found. Exiting...")
         exit(1)
@@ -111,16 +176,16 @@ def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
                              colour="green"
                              )
 
-    # Send the file
+    # Отправка файла
     try:
-        for client_socket, data_len in send_file(file_path, client_socket, server_IP, server_PORT, BUFFER_SIZE):
+        for data_len in send_file(file_path, client_socket, BUFFER_SIZE):
             progress_bar.update(data_len)
         progress_bar.close()
     except FileIsBeingAlreadyTransferredError:
         progress_bar.close()
         print("File is already transferring. Exiting...")
         exit(1)
-    except ConnectionFailedError:
+    except (ConnectionResetError, ConnectionAbortedError, ConnectionFailedError):
         progress_bar.close()
         print("Failed to reconnect. Exiting...")
         exit(1)
@@ -131,17 +196,11 @@ def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
     finally:
         client_socket.close()
 
-    # Close the connection
     print(f"File {os.path.basename(file_path)} sent successfully")
-
-    # except Exception as e:
-    #     print(f"Error: {e}")
-    # finally:
-    #     client_socket.close()
 
 
 if __name__ == "__main__":
-    # Parse the command line arguments
+    # Парсинг аргументов командной строки
     parser = argparse.ArgumentParser()
     parser.add_argument("-file_name", required=True)
     parser.add_argument("-server_IP", required=True)
@@ -149,7 +208,7 @@ if __name__ == "__main__":
     parser.add_argument("--buffer_size", type=int, default=1024)
     args = parser.parse_args()
 
-    # Start the client
+    # Запуск основной функции
     try:
         main(args.file_name, args.server_IP, int(args.server_PORT), args.buffer_size)
     except KeyboardInterrupt:
