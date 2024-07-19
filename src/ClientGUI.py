@@ -47,7 +47,7 @@ class ClientForm(QWidget):
         self.buffer_label = QLabel('Буфер:')
         self.buffer_spinbox = QSpinBox(self)
         self.buffer_spinbox.setFixedWidth(70)
-        self.buffer_spinbox.setRange(1, 65535)
+        self.buffer_spinbox.setRange(1, 32768)
         self.buffer_spinbox.setValue(1024)
         server_IP_and_port_layout.addWidget(self.server_IP_label)
         server_IP_and_port_layout.addWidget(self.server_IP_textbox)
@@ -150,7 +150,7 @@ class ClientForm(QWidget):
             self.progress_dialog.close()
             self.__show_message(QMessageBox.Critical, "Ошибка", "Файл уже отправляется от другого клиента")
             return
-        except ConnectionFailedError:
+        except ConnectionError:
             self.progress_dialog.close()
             self.__show_message(QMessageBox.Critical, "Ошибка", "Сервер недоступен")
             return

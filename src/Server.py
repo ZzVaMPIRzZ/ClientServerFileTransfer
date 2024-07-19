@@ -147,6 +147,7 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
             epoll.unregister(server_socket)
             epoll.close()
             for i in files:
+                os.remove(files[i].name)
                 files[i].close()
             server_socket.close()
             exit(0)
@@ -231,15 +232,13 @@ def main(directory="data", server_IP="127.0.0.1", server_PORT=12345):
                                             f"Connection from {client_address[0]}:{client_address[1]} closed with"
                                             f" error")
 
-                                    if client_socket in files:
-                                        files[client_socket].close()
-                                        if message_types[client_socket] != MessageType.END.value:
-                                            os.remove(files[client_socket].name)
                                     file_names.remove(files[client_socket].name)
-                                    del files[client_socket]
+                                    files[client_socket].close()
+                                    if message_types[client_socket] != MessageType.END.value:
+                                        os.remove(files[client_socket].name)
                                     epoll.unregister(client_socket)
-                                    if client_socket in fd_to_socket:
-                                        del fd_to_socket[client_socket]
+                                    del files[client_socket]
+                                    del fd_to_socket[fd]
                                     del addresses[client_socket]
                                     client_socket.close()
 
