@@ -1,6 +1,5 @@
 mkdir venv
 python3 -m venv venv
-export QT_QPA_PLATFORM=wayland
 # venv/bin/pip install auto-py-to-exe
 # venv/bin/auto-py-to-exe
 sudo apt-get install libxcb-xinerama0 libxcb1 libxcb-util1 libx11-xcb1 libxrender1 libxi6
