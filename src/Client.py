@@ -5,10 +5,8 @@ import os
 import argparse
 from sys import exit
 
-from ConnectionFailedError import ConnectionFailedError
-from FileIsBeingAlreadyTransferredError import FileIsBeingAlreadyTransferredError
-from TypeEnum import MessageType
-from ResponseEnum import Response
+from Errors import ConnectionFailedError, FileIsBeingAlreadyTransferredError
+from Enums import MessageType, Response
 
 
 def validate_ip_port(IP, PORT):

@@ -5,9 +5,8 @@ from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QLineEdi
     QFileDialog, QSpinBox, QProgressDialog, QMessageBox
 from PyQt5.QtCore import Qt
 
-from ConnectionFailedError import ConnectionFailedError
-from FileIsBeingAlreadyTransferredError import FileIsBeingAlreadyTransferredError
-from TypeEnum import MessageType
+from Errors import ConnectionFailedError, FileIsBeingAlreadyTransferredError
+from Enums import MessageType
 from Client import connect_to_server, send_file, send_message
 
 
