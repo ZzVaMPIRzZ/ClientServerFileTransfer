@@ -1,12 +1,15 @@
+import signal
 import time
 import socket
 import tqdm
 import os
 import argparse
 from sys import exit
+from ipaddress import ip_address
 
-from Errors import ConnectionFailedError, FileIsBeingAlreadyTransferredError
 from Enums import MessageType, Response
+
+CLIENT_CLOSE = False
 
 
 def validate_ip_port(IP, PORT):
@@ -19,20 +22,9 @@ def validate_ip_port(IP, PORT):
     raise:
         ValueError
     """
-    parts = IP.split(".")
-    try:
-        if len(parts) != 4:
-            raise ValueError
-        for part in parts:
-            try:
-                if int(part) > 255 or int(part) < 0:
-                    raise ValueError
-            except ValueError:
-                raise ValueError
-        if int(PORT) > 65535 or int(PORT) < 1:
-            raise ValueError
-    except socket.error:
-        raise ValueError
+    ip_address(IP)
+    if int(PORT) > 65535 or int(PORT) < 1:
+        raise ValueError("Invalid PORT")
 
 
 def connect_to_server(server_IP, server_PORT):
@@ -43,12 +35,12 @@ def connect_to_server(server_IP, server_PORT):
         server_PORT: int, порт сервера
 
     raise:
-        ConnectionFailedError
+        ConnectionError
     """
     try:
         validate_ip_port(server_IP, server_PORT)
     except ValueError:
-        raise ConnectionFailedError
+        raise ConnectionError("Invalid IP or PORT")
     client_socket = None
     for i in range(3):
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -58,9 +50,9 @@ def connect_to_server(server_IP, server_PORT):
             time.sleep(0.1)
             client_socket.connect((server_IP, server_PORT))
             break
-        except ConnectionRefusedError:
+        except (ConnectionError, socket.timeout):
             if i == 2:
-                raise ConnectionFailedError
+                raise ConnectionError("Connection failed")
 
     # print(f"Client socket created: {client_socket}")
     return client_socket
@@ -75,10 +67,7 @@ def send_message(client_socket, message_type, data):
         data: bytes, данные
 
     raise:
-        ConnectionResetError
-        ConnectionAbortedError
-        ConnectionFailedError
-        FileIsBeingAlreadyTransferredError
+        ConnectionError
     """
     try:
         client_socket.send(message_type.value)
@@ -86,12 +75,12 @@ def send_message(client_socket, message_type, data):
         client_socket.send(data)
         response = client_socket.recv(1)
         if response == Response.FILE_IS_BEING_ALREADY_TRANSFERRED.value:
-            raise FileIsBeingAlreadyTransferredError
+            raise ConnectionError("File is being already transferred")
         if response != Response.SUCCESS.value:
-            raise ConnectionFailedError
-        # print(sent1, sent2)
-    except (ConnectionResetError, ConnectionAbortedError,
-            ConnectionFailedError, FileIsBeingAlreadyTransferredError) as e:
+            if response == Response.ERROR.value:
+                raise ConnectionError("Transfer failed")
+            raise ConnectionError("Connection failed")
+    except ConnectionError as e:
         raise e
 
 
@@ -139,7 +128,7 @@ def send_file(file_path, client_socket, BUFFER_SIZE=1024):
                 try:
                     send_message(client_socket, MessageType.DATA, data)
                     break
-                except Exception as e:
+                except ConnectionError as e:
                     raise e
             file_size -= len(data)
             yield len(data)
@@ -162,7 +151,11 @@ def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
         exit(1)
     file_name = os.path.basename(file_path)
     file_size = os.path.getsize(file_path)
-    client_socket = connect_to_server(server_IP, server_PORT)
+    try:
+        client_socket = connect_to_server(server_IP, server_PORT)
+    except ConnectionError as e:
+        print(e)
+        exit(1)
     print(f"Connected to {server_IP}:{server_PORT}")
 
     print(f"Sending {file_name} ({file_size} bytes)")
@@ -174,22 +167,27 @@ def main(file_path, server_IP, server_PORT, BUFFER_SIZE=1024):
                              colour="green"
                              )
 
+    def exit_gracefully(signum, frame):
+        global CLIENT_CLOSE
+        if not CLIENT_CLOSE:
+            CLIENT_CLOSE = True
+            send_message(client_socket, MessageType.CANCEL, b'\x00')
+            client_socket.close()
+            progress_bar.close()
+            print("Exiting...")
+            exit(0)
+
+    signal.signal(signal.SIGINT, exit_gracefully)
+    signal.signal(signal.SIGTERM, exit_gracefully)
+
     # Отправка файла
     try:
         for data_len in send_file(file_path, client_socket, BUFFER_SIZE):
             progress_bar.update(data_len)
         progress_bar.close()
-    except FileIsBeingAlreadyTransferredError:
+    except ConnectionError as e:
         progress_bar.close()
-        print("File is already transferring. Exiting...")
-        exit(1)
-    except (ConnectionResetError, ConnectionAbortedError, ConnectionFailedError):
-        progress_bar.close()
-        print("Failed to reconnect. Exiting...")
-        exit(1)
-    except KeyboardInterrupt:
-        progress_bar.close()
-        print("Process interrupted. Exiting...")
+        print(e)
         exit(1)
     finally:
         client_socket.close()
@@ -202,12 +200,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-file_name", required=True)
     parser.add_argument("-server_IP", required=True)
-    parser.add_argument("-server_PORT", required=True)
+    parser.add_argument("-server_PORT", type=int, required=True)
     parser.add_argument("--buffer_size", type=int, default=1024)
     args = parser.parse_args()
 
     # Запуск основной функции
     try:
-        main(args.file_name, args.server_IP, int(args.server_PORT), args.buffer_size)
-    except KeyboardInterrupt:
-        print("Process interrupted. Exiting...")
+        validate_ip_port(args.server_IP, args.server_PORT)
+        if args.buffer_size <= 0 or args.buffer_size > 32768:
+            raise ValueError("Buffer size must be between 1 and 32768")
+    except ValueError as e:
+        print(e)
+        exit(1)
+    main(args.file_name, args.server_IP, args.server_PORT, args.buffer_size)

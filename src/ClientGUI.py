@@ -5,7 +5,6 @@ from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QLineEdi
     QFileDialog, QSpinBox, QProgressDialog, QMessageBox
 from PyQt5.QtCore import Qt
 
-from Errors import ConnectionFailedError, FileIsBeingAlreadyTransferredError
 from Enums import MessageType
 from Client import connect_to_server, send_file, send_message
 
@@ -128,8 +127,8 @@ class ClientForm(QWidget):
             return
         try:
             client_socket = connect_to_server(server_IP, server_port)
-        except ConnectionFailedError:
-            self.__show_message(QMessageBox.Critical, "Ошибка", "Сервер недоступен")
+        except ConnectionError as e:
+            self.__show_message(QMessageBox.Critical, "Ошибка", str(e))
             return
 
         sent_data_len = 0
@@ -145,13 +144,9 @@ class ClientForm(QWidget):
             self.progress_dialog.setValue(100)
             self.progress_dialog.close()
             self.__show_message(QMessageBox.Information, "Успех", "Файл успешно отправлен")
-        except FileIsBeingAlreadyTransferredError:
+        except ConnectionError as e:
             self.progress_dialog.close()
-            self.__show_message(QMessageBox.Critical, "Ошибка", "Файл уже отправляется от другого клиента")
-            return
-        except ConnectionError:
-            self.progress_dialog.close()
-            self.__show_message(QMessageBox.Critical, "Ошибка", "Сервер недоступен")
+            self.__show_message(QMessageBox.Critical, "Ошибка", str(e))
             return
         finally:
             client_socket.close()
